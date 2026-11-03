@@ -1,6 +1,6 @@
 {
   "name": "@watchtowerobservability/activity",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Watchtower hosted activity log: server SDK (record events, mint viewer sessions, list, export)",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,6 +23,14 @@
   "files": [
     "dist"
   ],
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.0.0 <2"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
   "engines": {
     "node": ">=18"
   },
@@ -42,5 +50,9 @@
     "type": "git",
     "url": "git+https://github.com/watchtowerobservability/watchtower-activity.git"
   },
-  "homepage": "https://github.com/watchtowerobservability/watchtower-activity#readme"
+  "homepage": "https://github.com/watchtowerobservability/watchtower-activity#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }
