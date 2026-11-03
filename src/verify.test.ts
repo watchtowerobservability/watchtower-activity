@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { chainHash, fromB64, merkleLeaf, merkleRoot, origin, verdict, verifyNote, verifyCommitment, verifyConsistency, verifyInclusion, verifyReceipt, verifyRows, verifySignature, type Key } from './verify';
 
-const load = (f: string) => JSON.parse(readFileSync(new URL(`../../../testdata/${f}`, import.meta.url), 'utf8'));
+// shortcut: testdata/ is a copy of the monorepo testdata vectors (the public mirror has no parent dir); re-copy when those change.
+const load = (f: string) => JSON.parse(readFileSync(new URL(`../testdata/${f}`, import.meta.url), 'utf8'));
 const V = load('activity_verify_vectors.json');
 const M = load('activity_merkle_vectors.json');
 const keys: Key[] = V.keys.keys;
