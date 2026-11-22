@@ -1,6 +1,6 @@
 name: Release
 # Push a v<package.json version> tag: build, test, attest, GitHub release, then npm with provenance.
-# NPM_TOKEN is an org secret of watchtowerobservability. Re-running a tag skips what already exists.
+# npm trusts this repo's release.yml (trusted publishing, OIDC): no npm token exists to expire. Re-running a tag skips what already exists.
 on:
   push:
     tags: ['v*']
@@ -28,6 +28,11 @@ jobs:
       - run: npm run build --if-present
       - run: npm run typecheck --if-present
       - run: npm test --if-present
+      - name: Refuse stage versions
+        # 0.0.0-stage was published to public npm once (B23); no 0.0.0-* build may reach the registry or a release
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          case "$v" in 0.0.0|0.0.0-*) echo "refusing to release version $v"; exit 1;; esac
       - run: npm pack --ignore-scripts
       - uses: actions/attest-build-provenance@v2
         with:
@@ -37,10 +42,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" *.tgz --generate-notes --verify-tag
-      - name: npm publish
+      - name: npm publish (provenance; NPM_TOKEN when set, else trusted publishing over OIDC)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          [ -n "$NODE_AUTH_TOKEN" ] || unset NODE_AUTH_TOKEN
+          npm install -g npm@^11.5.1 --no-audit --no-fund >/dev/null
           id="$(node -p 'const p=require("./package.json"); p.name+"@"+p.version')"
           if npm view "$id" version >/dev/null 2>&1; then echo "$id already on npm"; exit 0; fi
           npm publish *.tgz --provenance --access public
