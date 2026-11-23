@@ -5,7 +5,7 @@ import { copyFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 rmSync('dist', { recursive: true, force: true });
-const common = { entryPoints: ['src/index.ts'], bundle: true, platform: 'neutral', target: 'node18', sourcemap: true };
+const common = { entryPoints: ['src/index.ts'], bundle: true, platform: 'neutral', target: 'node18' };
 await build({ ...common, format: 'esm', outfile: 'dist/index.js' });
 await build({ ...common, format: 'cjs', outfile: 'dist/index.cjs' });
 const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');

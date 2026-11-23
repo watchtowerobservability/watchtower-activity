@@ -1,6 +1,6 @@
 {
   "name": "@watchtowerobservability/activity",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Watchtower hosted activity log: server SDK (record events, mint viewer sessions, list, export)",
   "license": "Apache-2.0",
   "type": "module",
