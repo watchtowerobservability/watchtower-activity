@@ -6,8 +6,8 @@
 //                 from GET /v1/activity/keys ({keys: [{kid, x: base64url raw key}]})
 //   Merkle        RFC 9162: leaf = SHA-256(0x00 || chain hash), node = SHA-256(0x01 || l || r)
 //   disclosure    commitment = SHA-256(salt bytes || canonical JSON of the value)
-import type { Receipt } from './types';
-import { ed25519phVerify } from './ed25519ph';
+import type { Receipt } from './types.js';
+import { ed25519phVerify } from './ed25519ph.js';
 
 const enc = new TextEncoder();
 type Bytes = Uint8Array<ArrayBuffer>;

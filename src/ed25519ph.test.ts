@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ed25519phVerify } from './ed25519ph';
+import { ed25519phVerify } from './ed25519ph.js';
 
 const hex = (s: string) => new Uint8Array((s.match(/../g) ?? []).map((h) => parseInt(h, 16)));
 const sha512 = async (s: string) => new Uint8Array(await globalThis.crypto.subtle.digest('SHA-512', new TextEncoder().encode(s)));

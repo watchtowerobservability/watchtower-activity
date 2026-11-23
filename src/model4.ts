@@ -1,5 +1,5 @@
 // Background queue (I23) and framework middleware (I24) for the server SDK.
-import type { EventIn, RecordResult } from './types';
+import type { EventIn, RecordResult } from './types.js';
 
 /** Anything that records batches: an `Activity` client. */
 interface Recorder { recordBatch(events: EventIn[], o?: { partial?: boolean }): Promise<RecordResult> }

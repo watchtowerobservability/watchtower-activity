@@ -1,13 +1,13 @@
 import type {
   AccountToken, AccountTokenIn, ActivityEvent, Archive, Batch, ErasureRequest, ErasureResult, EventIn, Export, ExportRequest, Invite, InviteIn,
   ListFilters, Page, RecordResult, Rule, RuleIn, RulePatch, SavedView, Stream, StreamIn, StreamPatch, ValidateResult, ViewerSession, ViewerSessionOptions,
-} from './types';
+} from './types.js';
 
-import { type Seal, type SigningKey, wire } from './model3';
+import { type Seal, type SigningKey, wire } from './model3.js';
 
-export type * from './types';
-export { canonicalJson, openSealed } from './model3';
-export type { Seal, SealedEnvelope, SigningKey } from './model3';
+export type * from './types.js';
+export { canonicalJson, openSealed } from './model3.js';
+export type { Seal, SealedEnvelope, SigningKey } from './model3.js';
 
 export interface ActivityOptions {
   /** The project's `wti_` secret key with scope `ingest:activity`: record, validate, sessions, list, export. */
@@ -462,6 +462,6 @@ export class Activity {
   }
 }
 
-export { ActivityQueue, middleware } from './model4';
-export type { QueueOptions, RequestContext } from './model4';
-export * from './verify';
+export { ActivityQueue, middleware } from './model4.js';
+export type { QueueOptions, RequestContext } from './model4.js';
+export * from './verify.js';

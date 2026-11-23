@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Activity, ActivityError, type EventIn } from './index';
+import { Activity, ActivityError, type EventIn } from './index.js';
 
 const ev = (i = 0): EventIn => ({ account_id: 'a', actor: { id: 'u' }, action: `x.${i}` });
 const json = (b: unknown, init: ResponseInit = {}) =>

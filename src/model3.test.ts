@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Activity, canonicalJson, openSealed } from './index';
+import { Activity, canonicalJson, openSealed } from './index.js';
 
 const SEED = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
 const VECTOR = { idempotency_key: 'k1', account_id: 'acme', action: 'user.login', actor: { id: 'u_1', name: 'Zoë "Z"' },

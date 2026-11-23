@@ -9,5 +9,5 @@ const common = { entryPoints: ['src/index.ts'], bundle: true, platform: 'neutral
 await build({ ...common, format: 'esm', outfile: 'dist/index.js' });
 await build({ ...common, format: 'cjs', outfile: 'dist/index.cjs' });
 const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
-execFileSync(process.execPath, [tsc, '-p', 'tsconfig.json', '--noEmit', 'false', '--emitDeclarationOnly', '--declaration', '--outDir', 'dist'], { stdio: 'inherit' });
+execFileSync(process.execPath, [tsc, '-p', 'tsconfig.json', '--noEmit', 'false', '--emitDeclarationOnly', '--declaration', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--outDir', 'dist'], { stdio: 'inherit' });
 copyFileSync('dist/index.d.ts', 'dist/index.d.cts');

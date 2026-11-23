@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ActivityQueue, middleware } from './model4';
-import type { EventIn } from './types';
+import { ActivityQueue, middleware } from './model4.js';
+import type { EventIn } from './types.js';
 
 const ev = (n: number): EventIn => ({ account_id: 'a', action: 'x.y', actor: { id: `u${n}` } });
 
