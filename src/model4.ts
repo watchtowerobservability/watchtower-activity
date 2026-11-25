@@ -1,4 +1,5 @@
 // Background queue (I23) and framework middleware (I24) for the server SDK.
+import { MemorySpool, SpoolFullError, type SpoolStore } from './spool.js';
 import type { EventIn, RecordResult } from './types.js';
 
 /** Anything that records batches: an `Activity` client. */
@@ -21,6 +22,14 @@ export interface QueueOptions {
   onDrop?: (events: EventIn[], reason: unknown) => void;
   /** Flush on process exit signals (default true in Node). */
   flushOnExit?: boolean;
+  /**
+   * Where events wait (default: in memory, `maxBuffer` events). A durable spool (`FileSpool`, or your own
+   * `SpoolStore`) survives a crash: on restart the queue sends what was not acked, with the same
+   * idempotency keys, and a send that fails for a transient reason (network, 429, 5xx after the client's
+   * retries) leaves the events in the spool for the next flush instead of dropping them. The spool owns its
+   * size bound; `maxBuffer` applies to the default memory spool only.
+   */
+  spool?: SpoolStore;
 }
 
 /**
@@ -31,8 +40,8 @@ export interface QueueOptions {
  */
 export class ActivityQueue {
   readonly #client: Recorder;
-  readonly #o: Required<Omit<QueueOptions, 'onDrop'>> & Pick<QueueOptions, 'onDrop'>;
-  #buf: EventIn[] = [];
+  readonly #o: Required<Omit<QueueOptions, 'onDrop' | 'spool'>> & Pick<QueueOptions, 'onDrop'>;
+  readonly #spool: SpoolStore;
   #timer: ReturnType<typeof setInterval> | undefined;
   #sending: Promise<void> = Promise.resolve();
 
@@ -42,6 +51,7 @@ export class ActivityQueue {
       maxBatch: Math.min(Math.max(o.maxBatch ?? 100, 1), 1000), flushMs: o.flushMs ?? 1000,
       maxBuffer: o.maxBuffer ?? 10000, mode: o.mode ?? 'open', onDrop: o.onDrop, flushOnExit: o.flushOnExit ?? true,
     };
+    this.#spool = o.spool ?? new MemorySpool({ maxItems: this.#o.maxBuffer });
     this.#timer = setInterval(() => { void this.flush(); }, this.#o.flushMs);
     (this.#timer as { unref?: () => void }).unref?.();
     const p = typeof process !== 'undefined' ? (process as { once?: (e: string, f: () => void) => void }) : undefined;
@@ -50,32 +60,38 @@ export class ActivityQueue {
     }
   }
 
-  /** Events waiting to be sent. */
-  get size() { return this.#buf.length; }
+  /** Events waiting to be sent (a number for the memory and file spools; await it for an async spool). */
+  get size() { return this.#spool.size; }
 
-  /** Queue one event. In `closed` mode a full buffer rejects; in `open` mode it drops and calls `onDrop`. */
+  /** Queue one event. In `closed` mode a full spool rejects; in `open` mode it drops and calls `onDrop`. */
   async enqueue(e: EventIn): Promise<void> {
     const ev = { ...e, idempotency_key: e.idempotency_key ?? globalThis.crypto.randomUUID() };
-    if (this.#buf.length >= this.#o.maxBuffer) {
-      const err = new Error('activity queue full');
-      if (this.#o.mode === 'closed') throw err;
+    try {
+      await this.#spool.push(ev);
+    } catch (err) {
+      if (this.#o.mode === 'closed' || !(err instanceof SpoolFullError)) throw err;
       this.#o.onDrop?.([ev], err);
       return;
     }
-    this.#buf.push(ev);
-    if (this.#buf.length >= this.#o.maxBatch) void this.flush();
+    if (typeof this.#spool.size === 'number' && this.#spool.size >= this.#o.maxBatch) void this.flush();
   }
 
-  /** Send everything queued now; resolves when sent (or dropped). */
+  /** Send everything queued now; resolves when sent (or dropped). A transient failure with a durable spool keeps the events and stops this flush. */
   flush(): Promise<void> {
     this.#sending = this.#sending.then(async () => {
-      while (this.#buf.length) {
-        const batch = this.#buf.splice(0, this.#o.maxBatch);
+      for (;;) {
+        const items = await this.#spool.peek(this.#o.maxBatch);
+        if (!items.length) return;
+        const batch = items.map((i) => i.event);
         try {
           const r = await this.#client.recordBatch(batch, { partial: true });
           const bad = (r.rejected ?? []).map((x) => batch[x.index]).filter((x): x is EventIn => !!x);
+          await this.#spool.ack(items.map((i) => i.id));
           if (bad.length) this.#o.onDrop?.(bad, r.rejected);
         } catch (err) {
+          const st = (err as { status?: number }).status;
+          if (this.#spool.durable && (st === undefined || st === 429 || st >= 500)) return; // retry on the next flush
+          await this.#spool.ack(items.map((i) => i.id));
           this.#o.onDrop?.(batch, err);
         }
       }
@@ -88,6 +104,7 @@ export class ActivityQueue {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     await this.flush();
+    await this.#spool.close?.();
   }
 }
 

@@ -1,4 +1,5 @@
 import type {
+  AccountGroup, AccountGroupMembership, ActivityConfig, ConfigResult, EventPage, Facet, FacetField, Finalized, FinalizeIn, Hook, HookKind, Stat, StatsQuery,
   AccountToken, AccountTokenIn, ActivityEvent, Archive, Batch, ErasureRequest, ErasureResult, EventIn, Export, ExportRequest, Invite, InviteIn,
   ListFilters, Page, RecordResult, Rule, RuleIn, RulePatch, SavedView, Stream, StreamIn, StreamPatch, ValidateResult, ViewerSession, ViewerSessionOptions,
 } from './types.js';
@@ -6,6 +7,7 @@ import type {
 import { type Seal, type SigningKey, wire } from './model3.js';
 
 export type * from './types.js';
+import { readFeedStream, type FeedStreamEvent } from './sse.js';
 export { canonicalJson, openSealed } from './model3.js';
 export type { Seal, SealedEnvelope, SigningKey } from './model3.js';
 
@@ -255,7 +257,7 @@ export class Activity {
   async createViewerSession(o: ViewerSessionOptions): Promise<ViewerSession> {
     const j = await this.#json<{ token: string; url: string; expires_at: string; jti?: string }>('POST', '/v1/activity/sessions', {
       account_id: o.accountId, actor_id: o.actorId, expires_in: o.expiresIn, capabilities: o.capabilities,
-      locale: o.locale, time_zone: o.timeZone,
+      locale: o.locale, time_zone: o.timeZone, viewer_id: o.viewerId,
       sub_scope: o.subScope && { target_type: o.subScope.targetType, target_id: o.subScope.targetId },
     });
     return { token: j.token, url: j.url, expiresAt: j.expires_at, ...(j.jti ? { jti: j.jti } : {}) };
@@ -269,6 +271,34 @@ export class Activity {
   /** Revoke every live viewer session of an account (e.g. on offboarding). Returns how many were live. */
   async revokeAccountSessions(accountId: string): Promise<{ revoked: number }> {
     return this.#json('POST', '/v1/activity/sessions/revoke', { account_id: accountId });
+  }
+
+  /**
+   * Event reads and writes by key, with the secret key. `finalize` settles an event recorded with
+   * `outcome: 'pending'` (PATCH /v1/activity/events/by-key/{key}); `byKey`, `page` and `facets` read the project's log.
+   */
+  readonly events = {
+    /** Same body twice: `replay: true`. Another body or an event not recorded as pending: 409. Unknown key (or past the hot window): 404. */
+    finalize: (key: string, body: FinalizeIn) => this.#json<Finalized>('PATCH', `/v1/activity/events/by-key/${encodeURIComponent(key)}`, body),
+    /** One event by the `idempotency_key` it was recorded with (live log only). `display` and `locale` as on `list`. */
+    byKey: (projectId: string, key: string, o: { display?: boolean; locale?: string } = {}) =>
+      this.#json<ActivityEvent>('GET', `${this.#prj(projectId)}/events/by-key/${encodeURIComponent(key)}${this.#query(o)}`),
+    /** One page with `total` / `total_exact` (pass `total: true`) and `next_cursor`; `list` iterates all pages. */
+    page: (projectId: string, f: ListFilters & { cursor?: string } = {}) => {
+      const { cursor, ...rest } = f;
+      return this.#json<EventPage>('GET', `${this.#prj(projectId)}/events${this.#query(rest, cursor)}`);
+    },
+    /** The 100 most frequent values of `field` (also `metadata.<path>`) over the same filters, the field's own filter left out. */
+    facets: (projectId: string, o: { field: FacetField } & ListFilters) => {
+      const { field, ...f } = o;
+      return this.#json<Page<Facet>>('GET', `${this.#prj(projectId)}/events/facets${this.#query(f, undefined, { field })}`);
+    },
+  };
+
+  /** Event counts: `by` a field (`hour` and `day` are time series) or `distinct: 'account_id' | 'actor_id'` for one exact distinct count. */
+  stats(projectId: string, o: StatsQuery): Promise<Page<Stat>> {
+    const { by, distinct, ...f } = o;
+    return this.#json('GET', `${this.#prj(projectId)}/stats${this.#query(f, undefined, { by, distinct })}`);
   }
 
   /** Project management calls authenticate with `apiKey`. */
@@ -294,6 +324,34 @@ export class Activity {
   async invite(projectId: string, accountId: string, o: InviteIn): Promise<Invite> {
     return this.#mjson('POST', `${this.#prj(projectId)}/accounts/${encodeURIComponent(accountId)}/invite`, o);
   }
+
+  /** Declarative project config (needs `apiKey`, project admin). `plan` answers the diff and applies nothing; `apply` writes it all in one transaction. */
+  readonly config = {
+    plan: (projectId: string, body: ActivityConfig) => this.#mjson<ConfigResult>('PUT', `${this.#prj(projectId)}/config?mode=plan`, body),
+    apply: (projectId: string, body: ActivityConfig) => this.#mjson<ConfigResult>('PUT', `${this.#prj(projectId)}/config?mode=apply`, body),
+  };
+
+  /** Project hooks (needs `apiKey`): `target_labels` (names and links for targets) and `digest` (digests as JSON). `put` returns the `signing_secret` once; check deliveries with `verifyHookSignature`. */
+  readonly hooks = {
+    list: (projectId: string) => this.#mjson<Page<Hook>>('GET', `${this.#prj(projectId)}/hooks`),
+    put: (projectId: string, kind: HookKind, o: { url: string }) => this.#mjson<Hook>('PUT', `${this.#prj(projectId)}/hooks/${kind}`, o),
+    delete: (projectId: string, kind: HookKind) => this.#mgmt('DELETE', `${this.#prj(projectId)}/hooks/${kind}`).then(() => undefined),
+  };
+
+  /** Account groups share one retention (needs `apiKey`). */
+  readonly groups = {
+    list: (projectId: string) => this.#mjson<Page<AccountGroup>>('GET', `${this.#prj(projectId)}/account-groups`),
+    /** Create a group or change its retention (30 to 3650 days within the plan's cap; `null` = the project's). */
+    put: (projectId: string, name: string, o: { retention_days?: number | null } = {}) =>
+      this.#mjson<AccountGroup>('PUT', `${this.#prj(projectId)}/account-groups/${encodeURIComponent(name)}`, o),
+    delete: (projectId: string, name: string) => this.#mgmt('DELETE', `${this.#prj(projectId)}/account-groups/${encodeURIComponent(name)}`).then(() => undefined),
+  };
+
+  readonly accounts = {
+    /** Move an account into a group, or out of any with `null`. */
+    setGroup: (projectId: string, accountId: string, group: string | null) =>
+      this.#mjson<AccountGroupMembership>('PUT', `${this.#prj(projectId)}/accounts/${encodeURIComponent(accountId)}/group`, { group }),
+  };
 
   /** SIEM / log streams (secrets are write-only). */
   streams(projectId: string) {
@@ -372,11 +430,12 @@ export class Activity {
     return (await (await this.#request(method, path, body)).json()) as T;
   }
 
-  #query(f: ListFilters & { format?: string; fields?: string[]; chain?: boolean }, cursor?: string): string {
+  #query(f: ListFilters & { format?: string; fields?: string[]; chain?: boolean }, cursor?: string, extra: Record<string, string | undefined> = {}): string {
     const m: Record<string, string | number | undefined> = {
       account_id: f.accountId, actor_id: f.actorId, action: f.action, target_type: f.targetType,
       target_id: f.targetId, q: f.q, outcome: f.outcome, severity: f.severity, order: f.order, from: f.from, to: f.to, limit: f.limit,
       source: f.source, since: f.since,
+      display: f.display ? 1 : undefined, locale: f.locale, total: f.total ? 'true' : undefined, ...extra,
       format: f.format, fields: f.fields?.length ? f.fields.join(',') : undefined, chain: f.chain ? 1 : undefined, cursor,
     };
     const q = new URLSearchParams();
@@ -420,23 +479,40 @@ export class Activity {
       if (!res.body) throw new ActivityError(res.status, { title: 'Empty export body' });
       return res.body;
     };
+    const open = () => this.#request('GET', '/v1/activity/feed/stream', undefined, token);
+    // A viewer session has its own locale: `locale` and `total` are project-read parameters.
     const q = (f: ListFilters, extra: Record<string, string> = {}, cursor?: string) => {
-      const s = new URLSearchParams(this.#query(f, cursor).slice(1));
+      const s = new URLSearchParams(this.#query({ ...f, locale: undefined, total: undefined }, cursor).slice(1));
       for (const [k, v] of Object.entries(extra)) s.set(k, v);
       return s.toString() ? `?${s}` : '';
     };
+    const feed = async function* (filters: ListFilters = {}): AsyncGenerator<ActivityEvent, void, undefined> {
+      let cursor: string | undefined;
+      do {
+        const page = await json<Page<ActivityEvent>>('GET', `/v1/activity/feed${q(filters, {}, cursor)}`);
+        yield* page.data;
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor);
+    };
+    const feedStream = async function* (): AsyncGenerator<FeedStreamEvent, void, undefined> {
+      const res = await open();
+      if (!res.body) throw new ActivityError(res.status, { title: 'Empty stream body' });
+      yield* readFeedStream(res.body);
+    };
     return {
-      /** Every event of the session's scope, page by page. */
-      feed: async function* (filters: ListFilters = {}): AsyncGenerator<ActivityEvent, void, undefined> {
-        let cursor: string | undefined;
-        do {
-          const page = await json<Page<ActivityEvent>>('GET', `/v1/activity/feed${q(filters, {}, cursor)}`);
-          yield* page.data;
-          cursor = page.next_cursor ?? undefined;
-        } while (cursor);
-      },
-      facets: (field: 'action' | 'actor' | 'target_type' | 'target', filters: ListFilters = {}) =>
-        json<Page<{ value: string; label?: string | null; count: number }>>('GET', `/v1/activity/feed/facets${q(filters, { field })}`),
+      /**
+       * Every event of the session's scope, page by page (`display: true` adds the rendered `display`).
+       * `feed.byKey(key)` reads one event by the idempotency key it was recorded with (404 when the session's scope does not show it).
+       * `feed.stream()` is the live "N new events" notice stream, see `stream`.
+       */
+      feed: Object.assign(feed, {
+        byKey: (key: string, o: { display?: boolean } = {}) =>
+          json<ActivityEvent>('GET', `/v1/activity/feed/by-key/${encodeURIComponent(key)}${q(o)}`),
+        stream: feedStream,
+      }),
+      /** `field` may be `outcome` or `metadata.<path>` too. */
+      facets: (field: FacetField, filters: ListFilters = {}) =>
+        json<Page<Facet>>('GET', `/v1/activity/feed/facets${q(filters, { field })}`),
       histogram: (filters: ListFilters = {}) =>
         json<Page<{ at: string; count: number }>>('GET', `/v1/activity/feed/histogram${q(filters, { bucket: 'day' })}`),
       /** Server-side saved views; account tokens only (a session gets 404 and keeps views in the browser). */
@@ -445,6 +521,11 @@ export class Activity {
         create: (v: { name: string; q?: string; params?: Record<string, string> }) => json<SavedView>('POST', '/v1/activity/views', v),
         delete: async (id: string) => { await this.#request('DELETE', `/v1/activity/views/${encodeURIComponent(id)}`, undefined, token); },
       },
+      /**
+       * Live "N new events" notices (capability `read`, a viewer session; one open stream per session, a
+       * second gets 409). Yields `new` messages, then `end`; refetch `feed()` on `new`. Rows are never pushed.
+       */
+      stream: feedStream,
       /** Merkle inclusion proof of one event (capability `verify`; 409 until its hour is signed). */
       proof: (eventId: string) => json<Record<string, unknown>>('GET', `/v1/activity/feed/proof?event_id=${encodeURIComponent(eventId)}`),
       /** Consistency proof between two signed tree heads (`toSize` defaults to the latest). */
@@ -462,6 +543,13 @@ export class Activity {
   }
 }
 
+export { readFeedStream, parseSseBlock } from './sse.js';
+export type { FeedStreamEvent } from './sse.js';
 export { ActivityQueue, middleware } from './model4.js';
 export type { QueueOptions, RequestContext } from './model4.js';
 export * from './verify.js';
+export { verifyHookSignature } from './hooks.js';
+export { MemorySpool, SpoolFullError } from './spool.js';
+export type { SpoolItem, SpoolStore } from './spool.js';
+export { FileSpool } from './spool-file.js';
+export type { FileSpoolOptions } from './spool-file.js';

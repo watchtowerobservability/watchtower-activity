@@ -4,7 +4,7 @@ export interface ActorIn {
   id?: string; name?: string;
   /** "user" | "api_key" | "service" | "system" | "support" | "anonymous" or your own. */
   type?: string; email?: string; url?: string;
-  /** Up to 50 keys, 40-character keys, depth 5 (every metadata object shares the 16 KB budget). */
+  /** Up to 50 keys, 40-character keys, depth 5 (every metadata object shares the 16 KB budget: 16,384 bytes of compact UTF-8 JSON). */
   metadata?: Record<string, unknown>;
   /** An administrator or other privileged actor (PCI DSS 10.2.1.2); query `privileged:true`. */
   privileged?: boolean;
@@ -35,7 +35,7 @@ export interface Context {
   /** Your clock source, e.g. `ntp:pool.ntp.org` (with clock-skew checks). */
   time_source?: string;
 }
-export type Outcome = 'success' | 'failure' | 'denied';
+export type Outcome = 'success' | 'failure' | 'denied' | 'pending';
 export type Severity = 'info' | 'notice' | 'warning' | 'critical';
 export type Operation = 'create' | 'read' | 'update' | 'delete' | 'access' | 'auth';
 export interface EventIn {
@@ -84,7 +84,14 @@ export interface ActivityEvent extends Omit<EventIn, 'idempotency_key' | 'occurr
   coalesced?: { of: string; key: string; count: number; first_at: string; last_at: string };
   /** Lookup table values of the actor and targets. */
   labels?: Record<string, unknown>;
+  /** Only with `display: true`: the event rendered by its action template (plain text). */
+  display?: Display;
+  /** Open events: `pending` until finalized (`finalize`). */
+  outcome?: Outcome;
 }
+export interface DisplayField { label: string; value: string }
+/** An event rendered by its action template. */
+export interface Display { title: string; subtitle?: string | null; fields: DisplayField[] }
 /** A signed write receipt (`receipts: true`): where the event sits in its account's chain and Merkle log. */
 export interface Receipt {
   index: number; id: string; account_id: string; seq: number; leaf_index: number; chain_hash: string;
@@ -139,6 +146,8 @@ export interface ViewerSessionOptions {
   locale?: string;
   /** IANA, e.g. "Europe/Berlin". */
   timeZone?: string;
+  /** Your id of the person: saved views and the seen marker are then kept on the server, shared across their sessions (1 to 56 characters). */
+  viewerId?: string;
   /** Show one object inside the account, e.g. a workspace. */
   subScope?: { targetType: string; targetId: string };
 }
@@ -154,6 +163,12 @@ export interface ListFilters {
   source?: 'live' | 'archive';
   /** RFC 3339: only events received after it. */
   since?: string;
+  /** Add `display` (the event rendered by its action template) to every event. */
+  display?: boolean;
+  /** With `display`: locale tag for per-locale template copy. Project reads only (a viewer session has its own locale). */
+  locale?: string;
+  /** Project reads: add `total` and `total_exact` (live log, counted up to 100,000). */
+  total?: boolean;
 }
 export interface AccountToken {
   id: string; name: string; capabilities: Capability[]; created_at: string; last_used_at?: string;
@@ -260,3 +275,71 @@ export interface SavedView { id: string; name: string; q: string; params: Record
 /** POST .../actors/{id}/erase with approval, and GET .../erasures. */
 export interface ErasureRequest { id: string; actor_id: string; requested_by: string; approved_by?: string | null; state: 'pending' | 'done' | 'cancelled'; created_at: string }
 export interface ErasureResult { accounts: number; rows: number; fields_erased: number }
+
+/** PATCH /v1/activity/events/by-key/{key}: settle an event recorded with `outcome: "pending"`. */
+export interface FinalizeIn {
+  outcome: Exclude<Outcome, 'pending'>;
+  /** Replaces the event's changes (up to 50). */
+  changes?: Change[];
+  /** Merged over the event's metadata. */
+  metadata?: Record<string, unknown>;
+}
+export interface Finalized { id: string; idempotency_key: string; outcome: string; replay: boolean }
+/** A page of project events; `total` only with `total: true`. */
+export interface EventPage extends Page<ActivityEvent> { total?: number | null; total_exact?: boolean | null }
+/** `metadata.<path>`: up to 4 dot-separated keys of letters, digits, `_`, `-`. */
+export type FacetField = 'action' | 'actor' | 'target_type' | 'target' | 'outcome' | `metadata.${string}`;
+export interface Facet { value: string; label?: string | null; count: number }
+export type StatBy = 'action' | 'actor' | 'account' | 'target_type' | 'target' | 'outcome' | 'severity' | 'day' | 'hour' | `metadata.${string}`;
+export interface Stat { key: string; label?: string | null; value: number }
+/** The project read filters (the list's) plus `from`/`to`. */
+export type ProjectFilters = ListFilters;
+/** Exactly one of `by` (groups) or `distinct` (one row with the exact distinct count). */
+export type StatsQuery = ProjectFilters & ({ by: StatBy; distinct?: undefined } | { distinct: 'account_id' | 'actor_id'; by?: undefined });
+export interface AccountGroup { name: string; accounts: number; retention_days?: number | null }
+export interface AccountGroupMembership { account_id: string; group?: string | null }
+export interface ConfigPolicy {
+  profile?: 'pci' | 'hipaa' | 'ai_act' | null; profile_mode?: 'warn' | 'enforce'; public_catalog?: boolean;
+  skew_action?: 'off' | 'warn' | 'flag' | 'reject'; skew_threshold_ms?: number;
+}
+export interface ConfigSchema {
+  code?: string | null; description?: string | null; mode?: string | null; target_types?: string[] | null;
+  metadata_schema?: Record<string, unknown> | null; actor_metadata_schema?: Record<string, unknown> | null; target_metadata_schema?: Record<string, unknown> | null;
+}
+/** PUT .../activity/config: a section left out is not touched; a section given is the complete desired state of that part. */
+export interface ActivityConfig {
+  /** By name; groups not listed are deleted. */
+  account_groups?: Record<string, { retention_days?: number | null }> | null;
+  policy?: ConfigPolicy | null;
+  /** By action; created or versioned, never deleted. */
+  schemas?: Record<string, ConfigSchema> | null;
+  /** Starter sets: `soc2`, `iso27001`, `hipaa`, `pci`, `ai_act`. */
+  templates?: string[] | null;
+  theme?: { draft: Record<string, unknown>; publish?: boolean } | null;
+}
+export interface ConfigChange { kind: 'schema' | 'theme' | 'policy' | 'account_group'; name: string; op: 'create' | 'update' | 'delete' }
+export interface ConfigResult {
+  mode: 'plan' | 'apply'; applied: boolean; changes: ConfigChange[];
+  summary: { create: number; update: number; delete: number };
+}
+export type HookKind = 'digest' | 'target_labels';
+export interface Hook { kind: HookKind; created_at: string; /** Only in the response that set the hook. Shown once. */ signing_secret?: string | null }
+/** The call Watchtower makes to your `target_labels` hook. */
+export interface TargetLabelsRequest { targets: { type: string; id: string }[] }
+/** Your answer: 2xx within 800 ms. `name` 1 to 256 characters; `url` http(s), `thumbnail` https, up to 2048. */
+export interface TargetLabelsResponse { data: { type: string; id: string; name: string; url?: string; thumbnail?: string }[] }
+export interface DigestCount { key: string; name?: string; count: number }
+/** The body of a `digest` hook delivery (`type: "activity.digest"`). */
+export interface DigestPayload {
+  kind: 'event'; type: 'activity.digest'; version: 1; at: string; project: string; message: string; recipient: string; locale?: string;
+  data: {
+    digest_id: string; account_id: string; frequency: string; from: string; to: string;
+    summary: {
+      total: number; accounts: number; actors: number;
+      by_outcome: DigestCount[]; by_severity: DigestCount[]; top_actions: DigestCount[]; top_actors: DigestCount[]; top_failures: DigestCount[]; daily: DigestCount[];
+    };
+    /** Up to 10 events, most notable first. */
+    notable: ActivityEvent[];
+    download_url?: string; unsubscribe_url?: string;
+  };
+}
